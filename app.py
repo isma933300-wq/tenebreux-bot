@@ -23,12 +23,17 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 
 # --- Textes du bot (modifie ici pour changer ce que le bot dit) ------------
 
-SHOP_NAME = "🛍 Atelier"
+SHOP_NAME = "🛍 Tenhebreux Shop"
 
 TEXT_WELCOME = (
     f"*{SHOP_NAME}*\n"
-    "Streaming, jeux, VPN, IA et bien plus — livraison instantanée.\n\n"
-    "Choisis une catégorie 👇"
+    "Comptes premium, abonnements IA, streaming, VPN — et boost Telegram / TikTok. "
+    "Payé en crypto, livré direct dans ce chat.\n\n"
+    "*Comment ça marche :*\n"
+    "1️⃣ Choisis une catégorie\n"
+    "2️⃣ Ajoute ce qu'il te faut au panier (🛒 en bas de la liste)\n"
+    "3️⃣ Commande, paie en crypto, reçois ton accès\n\n"
+    "👇 On commence par quoi ?"
 )
 TEXT_EMPTY_CART = "Ton panier est vide."
 TEXT_CART_TITLE = "🛒 *Ton panier*\n"
@@ -120,6 +125,25 @@ SUBCATEGORIES = {
     "Comptes & Abonnements": ["Streaming", "Musique & Audio", "IA", "VPN", "Mail", "Outils"],
 }
 
+# --- Stock -------------------------------------------------------------
+# Les services Telegram/TikTok (tg*/tt*) sont générés à la demande : stock illimité,
+# pas d'entrée ici. Les comptes/clés (a*) ont un stock limité — 5 par défaut au
+# départ, à ajuster avec /stock (voir la liste) et /restock <id> <quantité>.
+STOCK: dict[str, int] = {pid: 5 for pid in PRODUCTS if pid.startswith("a")}
+
+SEUIL_STOCK_BAS = 3  # en dessous de ce nombre, affiche "plus que X en stock"
+
+
+def stock_of(pid: str):
+    """None = illimité (service SMM). Un entier = nombre de comptes restants."""
+    return STOCK.get(pid)
+
+
+def in_stock(pid: str, qty: int = 1) -> bool:
+    s = stock_of(pid)
+    return s is None or s >= qty
+
+
 CARTS: dict[int, dict[str, int]] = {}
 
 
@@ -181,10 +205,18 @@ def kb_products(cat, sub=None):
         (pid, p) for pid, p in PRODUCTS.items()
         if p["cat"] == cat and (sub is None or p.get("sub") == sub)
     ]
-    rows = [
-        [{"text": f"{p['name']} — {fmt(p['price'])}", "callback_data": f"add:{pid}"}]
-        for pid, p in items
-    ]
+    rows = []
+    for pid, p in items:
+        s = stock_of(pid)
+        label = f"{p['name']} — {fmt(p['price'])}"
+        if s == 0:
+            label = f"❌ {p['name']} — Rupture"
+            cb = "oos"
+        else:
+            if s is not None and s <= SEUIL_STOCK_BAS:
+                label += f" (plus que {s})"
+            cb = f"add:{pid}"
+        rows.append([{"text": label, "callback_data": cb}])
     back = f"cat:{cat}" if sub else "menu"
     back_label = "⬅️ Sous-catégories" if sub else "⬅️ Catégories"
     rows.append([{"text": back_label, "callback_data": back}])
@@ -227,20 +259,46 @@ def webhook():
     if "message" in update:
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "")
+
+        is_admin = ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID)
+
         if text.startswith("/start"):
             send_message(chat_id, TEXT_WELCOME, kb_categories(), parse_mode="Markdown")
+
+        elif is_admin and text.startswith("/stock"):
+            lines = [
+                f"• {PRODUCTS[pid]['name']} : {qty}"
+                for pid, qty in sorted(STOCK.items())
+            ]
+            send_message(chat_id, "📦 *Stock actuel*\n\n" + "\n".join(lines), parse_mode="Markdown")
+
+        elif is_admin and text.startswith("/restock"):
+            parts = text.split()
+            if len(parts) != 3 or parts[1] not in STOCK or not parts[2].lstrip("-").isdigit():
+                send_message(
+                    chat_id,
+                    "Usage : `/restock <id> <quantité à ajouter>`\n"
+                    "Ex. `/restock a04 10` ajoute 10 au stock de a04.\n"
+                    "Tape /stock pour voir les id.",
+                    parse_mode="Markdown",
+                )
+            else:
+                pid, delta = parts[1], int(parts[2])
+                STOCK[pid] = max(0, STOCK[pid] + delta)
+                send_message(chat_id, f"✅ {PRODUCTS[pid]['name']} : stock mis à {STOCK[pid]}.")
 
     elif "callback_query" in update:
         cq = update["callback_query"]
         chat_id = cq["message"]["chat"]["id"]
         message_id = cq["message"]["message_id"]
         data = cq["data"]
-        answer_callback(cq["id"])
 
         if data == "menu":
+            answer_callback(cq["id"])
             edit_message(chat_id, message_id, f"*{SHOP_NAME}*\nChoisis une catégorie 👇", kb_categories(), parse_mode="Markdown")
 
         elif data.startswith("cat:"):
+            answer_callback(cq["id"])
             cat = data.split(":", 1)[1]
             if cat in SUBCATEGORIES:
                 edit_message(chat_id, message_id, f"📂 *{cat}*", kb_subcats(cat), parse_mode="Markdown")
@@ -248,20 +306,31 @@ def webhook():
                 edit_message(chat_id, message_id, f"📂 *{cat}*", kb_products(cat), parse_mode="Markdown")
 
         elif data.startswith("sub:"):
+            answer_callback(cq["id"])
             _, cat, sub = data.split(":", 2)
             edit_message(chat_id, message_id, f"📂 *{cat}* · {sub}", kb_products(cat, sub), parse_mode="Markdown")
+
+        elif data == "oos":
+            answer_callback(cq["id"], "Ce produit est en rupture de stock.", alert=True)
 
         elif data.startswith("add:"):
             pid = data.split(":", 1)[1]
             cart = get_cart(chat_id)
-            cart[pid] = cart.get(pid, 0) + 1
-            answer_callback(cq["id"], f"Ajouté : {PRODUCTS[pid]['name']}")
+            wanted = cart.get(pid, 0) + 1
+            if not in_stock(pid, wanted):
+                left = stock_of(pid)
+                answer_callback(cq["id"], f"Stock insuffisant — il ne reste que {left}.", alert=True)
+            else:
+                cart[pid] = wanted
+                answer_callback(cq["id"], f"Ajouté : {PRODUCTS[pid]['name']}")
 
         elif data == "cart":
+            answer_callback(cq["id"])
             text, kb = cart_view(chat_id)
             edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
 
         elif data == "clear":
+            answer_callback(cq["id"])
             CARTS[chat_id] = {}
             text, kb = cart_view(chat_id)
             edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
@@ -272,6 +341,12 @@ def webhook():
                 answer_callback(cq["id"], "Panier vide.", alert=True)
             else:
                 total = sum(PRODUCTS[pid]["price"] * qty for pid, qty in cart.items())
+                answer_callback(cq["id"])
+
+                # Décrémente le stock des articles limités (comptes/clés).
+                for pid, qty in cart.items():
+                    if pid in STOCK:
+                        STOCK[pid] = max(0, STOCK[pid] - qty)
 
                 # Message au client avec les coordonnées de paiement.
                 edit_message(
