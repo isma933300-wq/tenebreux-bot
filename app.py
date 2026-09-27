@@ -23,23 +23,30 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 
 # --- Textes du bot (modifie ici pour changer ce que le bot dit) ------------
 
-TEXT_WELCOME = "Bienvenue 👋\nChoisis une catégorie :"
+SHOP_NAME = "🛍 Atelier"
+
+TEXT_WELCOME = (
+    f"*{SHOP_NAME}*\n"
+    "Streaming, jeux, VPN, IA et bien plus — livraison instantanée.\n\n"
+    "Choisis une catégorie 👇"
+)
 TEXT_EMPTY_CART = "Ton panier est vide."
-TEXT_CART_TITLE = "🛒 Ton panier\n"
+TEXT_CART_TITLE = "🛒 *Ton panier*\n"
 TEXT_ORDER_CONFIRM = (
-    "✅ Commande enregistrée — total {total}.\n\n"
-    "Pour finaliser, envoie le paiement à :\n"
+    "✅ *Commande enregistrée* — total {total}\n\n"
+    "Pour finaliser, envoie le paiement à l'une de ces adresses "
+    "_(appuie longtemps pour copier)_ :\n\n"
     "{payment_info}\n\n"
-    "Puis envoie une capture du paiement ici, un vendeur confirme et livre "
-    "sous peu."
+    "Puis envoie une capture du paiement ici, un vendeur confirme et livre sous peu."
 )
 
 # Coordonnées affichées au client après une commande.
+# Chaque adresse est en `code` : un appui long dessus la copie directement.
 PAYMENT_INFO = (
-    "Ξ ETH : 0xEd62F9bbB932028ab48FF810ca2902beee2DFd92\n"
-    "◎ SOL : 3j3EGmk6cqXwp9noZX1vR7kqvoWPbnURg2RCoPWryrJT\n"
-    "₿ BTC : bc1qamsdcq4zrdsqadztlz40m5zzurpqrva3dv45g3\n"
-    "Ł LTC : Li3fSXPaaB7dbv3eTJ7JczdgbYqqp9n1B6\n\n"
+    "Ξ ETH : `0xEd62F9bbB932028ab48FF810ca2902beee2DFd92`\n"
+    "◎ SOL : `3j3EGmk6cqXwp9noZX1vR7kqvoWPbnURg2RCoPWryrJT`\n"
+    "₿ BTC : `bc1qamsdcq4zrdsqadztlz40m5zzurpqrva3dv45g3`\n"
+    "Ł LTC : `Li3fSXPaaB7dbv3eTJ7JczdgbYqqp9n1B6`\n\n"
     "Réf. à indiquer : ton pseudo Telegram"
 )
 
@@ -221,7 +228,7 @@ def webhook():
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "")
         if text.startswith("/start"):
-            send_message(chat_id, TEXT_WELCOME, kb_categories())
+            send_message(chat_id, TEXT_WELCOME, kb_categories(), parse_mode="Markdown")
 
     elif "callback_query" in update:
         cq = update["callback_query"]
@@ -231,18 +238,18 @@ def webhook():
         answer_callback(cq["id"])
 
         if data == "menu":
-            edit_message(chat_id, message_id, "Choisis une catégorie :", kb_categories())
+            edit_message(chat_id, message_id, f"*{SHOP_NAME}*\nChoisis une catégorie 👇", kb_categories(), parse_mode="Markdown")
 
         elif data.startswith("cat:"):
             cat = data.split(":", 1)[1]
             if cat in SUBCATEGORIES:
-                edit_message(chat_id, message_id, f"📂 {cat}", kb_subcats(cat))
+                edit_message(chat_id, message_id, f"📂 *{cat}*", kb_subcats(cat), parse_mode="Markdown")
             else:
-                edit_message(chat_id, message_id, f"📂 {cat}", kb_products(cat))
+                edit_message(chat_id, message_id, f"📂 *{cat}*", kb_products(cat), parse_mode="Markdown")
 
         elif data.startswith("sub:"):
             _, cat, sub = data.split(":", 2)
-            edit_message(chat_id, message_id, f"📂 {cat} · {sub}", kb_products(cat, sub))
+            edit_message(chat_id, message_id, f"📂 *{cat}* · {sub}", kb_products(cat, sub), parse_mode="Markdown")
 
         elif data.startswith("add:"):
             pid = data.split(":", 1)[1]
@@ -252,12 +259,12 @@ def webhook():
 
         elif data == "cart":
             text, kb = cart_view(chat_id)
-            edit_message(chat_id, message_id, text, kb)
+            edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
 
         elif data == "clear":
             CARTS[chat_id] = {}
             text, kb = cart_view(chat_id)
-            edit_message(chat_id, message_id, text, kb)
+            edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
 
         elif data == "checkout":
             cart = get_cart(chat_id)
@@ -270,6 +277,7 @@ def webhook():
                 edit_message(
                     chat_id, message_id,
                     TEXT_ORDER_CONFIRM.format(total=fmt(total), payment_info=PAYMENT_INFO),
+                    parse_mode="Markdown",
                 )
 
                 # Notification au vendeur avec le détail de la commande.
@@ -282,9 +290,10 @@ def webhook():
                     )
                     send_message(
                         ADMIN_CHAT_ID,
-                        f"🆕 Nouvelle commande — {username} (id {chat_id})\n\n"
-                        f"{detail}\n\nTotal : {fmt(total)}\n\n"
-                        "En attente du paiement, à confirmer manuellement.",
+                        f"🆕 *Nouvelle commande* — {username} (id `{chat_id}`)\n\n"
+                        f"{detail}\n\n*Total : {fmt(total)}*\n\n"
+                        "_En attente du paiement, à confirmer manuellement._",
+                        parse_mode="Markdown",
                     )
 
                 CARTS[chat_id] = {}
