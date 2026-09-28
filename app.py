@@ -27,15 +27,29 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 # À mettre dans les variables d'environnement Render : WELCOME_IMAGE
 WELCOME_IMAGE = os.environ.get("WELCOME_IMAGE", "")
 
+# Lien du support (ex. https://t.me/ton_pseudo). Variable Render SUPPORT_LINK ou à écrire ici.
+SUPPORT_LINK = os.environ.get("SUPPORT_LINK", "https://t.me/tenhebreux")
+
+# Canaux affichés dans la rubrique "Canaux" : (texte du bouton, lien https://t.me/...)
+CHANNELS = [
+    ("🌐 Portail", "https://t.me/portaltenhebreux"),
+    ("📢 Canal", "https://t.me/selltenhebreux"),
+    ("🧾 Vouch", "https://t.me/preuvetenhebreux"),
+]
+
 # --- Textes du bot (modifie ici pour changer ce que le bot dit) ------------
 
 SHOP_NAME = "𖤐 TENHEBREUX"
 
 TEXT_WELCOME = (
     f"🖤 *Bienvenue chez {SHOP_NAME}*\n"
+    "━━━━━━━━━━━━━━━\n"
+    "🆔 ID : `{user_id}`\n"
+    "👤 Pseudo : `{username}`\n"
+    "💰 Solde : *{balance}*\n"
     "━━━━━━━━━━━━━━━\n\n"
     "🚀 *Fais grimper ta présence en ligne*\n"
-    "✈️ Telegram · 🎵 TikTok · 🔐 Abonnements\n\n"
+    "📈 SMM · 🔐 Comptes & Abonnements\n\n"
     "💎 *Tarifs bas, catalogue clair*\n"
     "Tout est affiché avec le prix, sans surprise.\n\n"
     "⚡ *Commande en 3 étapes*\n"
@@ -66,6 +80,17 @@ TEXT_ORDER_CONFIRM = (
     "🔎 Suivi disponible dans *Mes commandes*."
 )
 
+TEXT_ORDER_PAID = (
+    "🎉 *Commande payée avec ton solde !*\n"
+    "━━━━━━━━━━━━━━━\n\n"
+    "📦 Commande *#{order_id}*\n"
+    "💰 Montant : *{total}*\n"
+    "💳 Solde restant : *{balance}*\n\n"
+    "⚙️ Un vendeur prend ta commande en charge. "
+    "Tu reçois une notification à chaque étape.\n\n"
+    "🔎 Suivi disponible dans *Mes commandes*."
+)
+
 # Messages envoyés au client quand le vendeur change le statut.
 STATUS_MESSAGES = {
     "paid": "💳 *Paiement reçu, merci !*\nTa commande est validée et passe bientôt en traitement.",
@@ -76,17 +101,33 @@ STATUS_MESSAGES = {
 
 # Textes d'accueil des catégories.
 CAT_TEXT = {
-    "Telegram": (
-        "✈️ *Telegram*\n\n"
-        "🚀 Booste ton canal ou ton groupe\n"
+    "SMM": (
+        "📈 *SMM*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "🚀 Booste tes réseaux : followers, vues, likes, réactions...\n"
         "💎 Prix pour 1 000 unités\n\n"
-        "_choisis ton service_ 👇"
+        "_choisis ta plateforme_ 👇"
     ),
-    "TikTok": (
-        "🎵 *TikTok*\n\n"
-        "🔥 Fais grimper ton compte\n"
-        "💎 Prix pour 1 000 unités\n\n"
-        "_choisis ton service_ 👇"
+    "Comptes & Abonnements": (
+        "🔐 *Comptes & Abonnements*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "_choisis une catégorie_ 👇"
+    ),
+}
+
+# Titres des écrans produits (sous-catégories SMM).
+SUB_TEXT = {
+    ("SMM", "Telegram"): (
+        "✈️ *SMM · Telegram*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "🚀 Members, views, reactions\n"
+        "💎 Prix pour 1 000 unités\n"
+    ),
+    ("SMM", "TikTok"): (
+        "🎵 *SMM · TikTok*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "🔥 Followers, views, likes, favorites, shares, comments\n"
+        "💎 Prix pour 1 000 unités\n"
     ),
 }
 
@@ -108,21 +149,21 @@ def fmt(price: float) -> str:
 
 # --- Catalogue -------------------------------------------------------------
 
-CATEGORIES = ["Telegram", "TikTok", "Comptes & Abonnements"]
+CATEGORIES = ["SMM", "Comptes & Abonnements"]
 
 PRODUCTS = {
     # --- Telegram services (prix pour 1000 unités) ---
-    "tg1": {"name": "Members (1K)", "cat": "Telegram", "price": 3},
-    "tg2": {"name": "Views (1K)", "cat": "Telegram", "price": 0.50},
-    "tg3": {"name": "Reactions (1K)", "cat": "Telegram", "price": 0.75},
+    "tg1": {"name": "Members (1K)", "cat": "SMM", "sub": "Telegram", "price": 3},
+    "tg2": {"name": "Views (1K)", "cat": "SMM", "sub": "Telegram", "price": 0.50},
+    "tg3": {"name": "Reactions (1K)", "cat": "SMM", "sub": "Telegram", "price": 0.75},
 
     # --- TikTok services (prix pour 1000 unités) ---
-    "tt1": {"name": "Followers (1K)", "cat": "TikTok", "price": 5},
-    "tt2": {"name": "Views (1K)", "cat": "TikTok", "price": 0.50},
-    "tt3": {"name": "Likes (1K)", "cat": "TikTok", "price": 2},
-    "tt4": {"name": "Favorites (1K)", "cat": "TikTok", "price": 0.50},
-    "tt5": {"name": "Shares (1K)", "cat": "TikTok", "price": 0.50},
-    "tt6": {"name": "Custom Comments (1K)", "cat": "TikTok", "price": 15},
+    "tt1": {"name": "Followers (1K)", "cat": "SMM", "sub": "TikTok", "price": 5},
+    "tt2": {"name": "Views (1K)", "cat": "SMM", "sub": "TikTok", "price": 0.50},
+    "tt3": {"name": "Likes (1K)", "cat": "SMM", "sub": "TikTok", "price": 2},
+    "tt4": {"name": "Favorites (1K)", "cat": "SMM", "sub": "TikTok", "price": 0.50},
+    "tt5": {"name": "Shares (1K)", "cat": "SMM", "sub": "TikTok", "price": 0.50},
+    "tt6": {"name": "Custom Comments (1K)", "cat": "SMM", "sub": "TikTok", "price": 15},
 
     # --- Comptes & abonnements ---
     "a01": {"name": "Gmail Access FA", "cat": "Comptes & Abonnements", "sub": "Mail", "price": 2},
@@ -166,6 +207,7 @@ PRODUCTS = {
 
 # Catégories qui ont un second niveau de menu (sous-catégories).
 SUBCATEGORIES = {
+    "SMM": ["Telegram", "TikTok"],
     "Comptes & Abonnements": ["Streaming", "Musique & Audio", "IA", "VPN", "Mail", "Outils"],
 }
 
@@ -219,6 +261,11 @@ def init_db():
         unit_price REAL NOT NULL,
         FOREIGN KEY(order_id) REFERENCES orders(id)
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        telegram_id INTEGER PRIMARY KEY,
+        username TEXT,
+        balance REAL NOT NULL DEFAULT 0
+    )""")
     conn.commit()
     conn.close()
 
@@ -226,11 +273,55 @@ def init_db():
 init_db()
 
 
-def create_order(telegram_id, username, cart, total):
+def upsert_user(user):
+    """Enregistre / met à jour le client et renvoie son @ (ou son prénom)."""
+    username = f"@{user['username']}" if user.get("username") else (user.get("first_name") or "client")
+    conn = db_connect()
+    conn.execute(
+        "INSERT INTO users (telegram_id, username, balance) VALUES (?, ?, 0) "
+        "ON CONFLICT(telegram_id) DO UPDATE SET username = excluded.username",
+        (user["id"], username),
+    )
+    conn.commit()
+    conn.close()
+    return username
+
+
+def get_balance(telegram_id):
+    conn = db_connect()
+    row = conn.execute("SELECT balance FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    conn.close()
+    return round(row["balance"], 2) if row else 0.0
+
+
+def add_balance(telegram_id, delta):
+    """Ajoute (ou retire si négatif) du solde. Ne descend jamais sous 0. Renvoie le nouveau solde."""
+    conn = db_connect()
+    conn.execute("INSERT OR IGNORE INTO users (telegram_id, username, balance) VALUES (?, NULL, 0)", (telegram_id,))
+    conn.execute("UPDATE users SET balance = MAX(0, ROUND(balance + ?, 2)) WHERE telegram_id = ?", (delta, telegram_id))
+    conn.commit()
+    row = conn.execute("SELECT balance FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    conn.close()
+    return round(row["balance"], 2)
+
+
+def spend_balance(telegram_id, amount):
+    """Débite le solde seulement s'il est suffisant. Renvoie True si le paiement est passé."""
+    conn = db_connect()
+    cur = conn.execute(
+        "UPDATE users SET balance = ROUND(balance - ?, 2) WHERE telegram_id = ? AND balance >= ?",
+        (amount, telegram_id, amount),
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def create_order(telegram_id, username, cart, total, status="pending_payment"):
     conn = db_connect()
     cur = conn.execute(
         "INSERT INTO orders (telegram_id, username, total, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (telegram_id, username, total, "pending_payment", datetime.now(timezone.utc).isoformat()),
+        (telegram_id, username, total, status, datetime.now(timezone.utc).isoformat()),
     )
     order_id = cur.lastrowid
     for pid, qty in cart.items():
@@ -315,6 +406,8 @@ def profile_view(chat_id):
         "👤 *Mon profil*",
         "━━━━━━━━━━━━━━━",
         "",
+        f"🆔 ID : `{chat_id}`",
+        f"💰 Solde : *{fmt(get_balance(chat_id))}*",
         f"📦 Commandes : *{stats['total_orders']}*",
         f"✅ Terminées : *{stats['completed_orders'] or 0}*",
         f"⚙️ En cours : *{active}*",
@@ -392,7 +485,7 @@ def admin_order_text(order_id):
     status = ORDER_STATUSES.get(order["status"], order["status"])
     return (
         f"📦 *Commande #{order_id:05d}*\n"
-        f"👤 {order['username'] or 'Client'} — id `{order['telegram_id']}`\n\n"
+        f"👤 `{order['username'] or 'Client'}` — id `{order['telegram_id']}`\n\n"
         f"{detail}\n\n"
         f"*Total : {fmt(order['total'])}*\n"
         f"*Statut :* {status}"
@@ -419,20 +512,28 @@ def send_message(chat_id, text, keyboard=None, parse_mode=None):
     return tg_call("sendMessage", payload)
 
 
-def send_home(chat_id):
-    """Écran d'accueil : image + texte + menu si WELCOME_IMAGE est défini, sinon texte seul."""
+def welcome_text(user):
+    username = upsert_user(user).replace("`", "")
+    return TEXT_WELCOME.format(
+        user_id=user["id"], username=username, balance=fmt(get_balance(user["id"]))
+    )
+
+
+def send_home(chat_id, user):
+    """Écran d'accueil (ID, @, solde) : avec image si WELCOME_IMAGE est défini, sinon texte seul."""
     kb = kb_categories(chat_id)
+    text = welcome_text(user)
     if WELCOME_IMAGE:
         r = tg_call("sendPhoto", {
             "chat_id": chat_id,
             "photo": WELCOME_IMAGE,
-            "caption": TEXT_WELCOME,
+            "caption": text,
             "parse_mode": "Markdown",
             "reply_markup": {"inline_keyboard": kb},
         })
         if r.get("ok"):
             return
-    send_message(chat_id, TEXT_WELCOME, kb, parse_mode="Markdown")
+    send_message(chat_id, text, kb, parse_mode="Markdown")
 
 
 def edit_message(chat_id, message_id, text, keyboard=None, parse_mode=None):
@@ -460,9 +561,8 @@ def answer_callback(callback_id, text=None, alert=False):
 # --- Écrans (mêmes menus qu'avant) ------------------------------------------
 
 CATEGORY_LABELS = {
-    "Telegram": "✈️ Telegram",
-    "TikTok": "🎵 TikTok",
-    "Comptes & Abonnements": "🔐 Comptes & Abonnements",
+    "SMM": "📈 SMM",
+    "Comptes & Abonnements": "🔐 Comptes & Abos",
 }
 
 
@@ -471,16 +571,16 @@ def cart_count(chat_id):
 
 
 def kb_categories(chat_id=None):
-    rows = [
-        [{"text": CATEGORY_LABELS.get(c, c), "callback_data": f"cat:{c}"}]
-        for c in CATEGORIES
-    ]
     count = cart_count(chat_id) if chat_id is not None else 0
-    cart_label = f"🛒 Panier · {count}" if count else "🛒 Panier vide"
-    rows.append([{"text": cart_label, "callback_data": "cart"}])
-    rows.append([{"text": "📦 Mes commandes", "callback_data": "orders"}])
-    rows.append([{"text": "👤 Mon profil", "callback_data": "profile"}])
-    return rows
+    cart_label = f"🛒 Panier · {count}" if count else "🛒 Panier"
+    return [
+        [{"text": CATEGORY_LABELS.get(c, c), "callback_data": f"cat:{c}"} for c in CATEGORIES],
+        [{"text": cart_label, "callback_data": "cart"},
+         {"text": "📦 Commandes", "callback_data": "orders"}],
+        [{"text": "👤 Profil", "callback_data": "profile"},
+         {"text": "💬 Support", "callback_data": "support"}],
+        [{"text": "📢 Canaux", "callback_data": "channels"}],
+    ]
 
 
 SUBCAT_LABELS = {
@@ -490,41 +590,61 @@ SUBCAT_LABELS = {
     "VPN": "🛡 VPN",
     "Mail": "✉️ Mail",
     "Outils": "🧰 Outils",
+    "Telegram": "✈️ Telegram",
+    "TikTok": "🎵 TikTok",
 }
 
 
 def kb_subcats(cat):
-    rows = [
-        [{"text": SUBCAT_LABELS.get(s, s), "callback_data": f"sub:{cat}:{s}"}]
+    subs = [
+        {"text": SUBCAT_LABELS.get(s, s), "callback_data": f"sub:{cat}:{s}"}
         for s in SUBCATEGORIES[cat]
     ]
-    rows.append([{"text": "🛒 Panier", "callback_data": "cart"}])
-    rows.append([{"text": "⬅️ Catégories", "callback_data": "menu"}])
+    rows = [subs[i:i + 2] for i in range(0, len(subs), 2)]
+    rows.append([{"text": "🛒 Panier", "callback_data": "cart"},
+                 {"text": "⬅️ Retour", "callback_data": "menu"}])
     return rows
 
 
-def kb_products(cat, sub=None):
-    items = [
+def _items(cat, sub=None):
+    return [
         (pid, p) for pid, p in PRODUCTS.items()
         if p["cat"] == cat and (sub is None or p.get("sub") == sub)
     ]
-    rows = []
-    for pid, p in items:
+
+
+def kb_products(cat, sub=None):
+    btns = []
+    for pid, p in _items(cat, sub):
         s = stock_of(pid)
-        label = f"{p['name']} — {fmt(p['price'])}"
         if s == 0:
-            label = f"❌ {p['name']} — Rupture"
-            cb = "oos"
+            btns.append({"text": f"❌ {p['name']}", "callback_data": "oos"})
         else:
+            label = f"{p['name']} · {fmt(p['price'])}"
             if s is not None and s <= SEUIL_STOCK_BAS:
-                label += f" (plus que {s})"
-            cb = f"add:{pid}"
-        rows.append([{"text": label, "callback_data": cb}])
+                label += f" ({s})"
+            btns.append({"text": label, "callback_data": f"add:{pid}"})
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
     back = f"cat:{cat}" if sub else "menu"
-    back_label = "⬅️ Sous-catégories" if sub else "⬅️ Catégories"
-    rows.append([{"text": "🛒 Panier", "callback_data": "cart"}])
-    rows.append([{"text": back_label, "callback_data": back}])
+    rows.append([{"text": "🛒 Panier", "callback_data": "cart"},
+                 {"text": "⬅️ Retour", "callback_data": back}])
     return rows
+
+
+def products_text(cat, sub=None):
+    """Texte de l'écran produits : liste complète avec prix (les boutons peuvent être tronqués)."""
+    head = SUB_TEXT.get((cat, sub)) or (f"📂 *{cat}*" + (f" · {sub}" if sub else ""))
+    lines = [head]
+    for pid, p in _items(cat, sub):
+        s = stock_of(pid)
+        tag = ""
+        if s == 0:
+            tag = " — ❌ rupture"
+        elif s is not None and s <= SEUIL_STOCK_BAS:
+            tag = f" — plus que {s}"
+        lines.append(f"• {p['name']} — *{fmt(p['price'])}*{tag}")
+    lines.append("\n_touche un produit pour l'ajouter au panier_ 👇")
+    return "\n".join(lines)
 
 
 def cart_view(chat_id):
@@ -547,10 +667,105 @@ def cart_view(chat_id):
 
     rows = [
         [{"text": "✅ Valider ma commande", "callback_data": "checkout"}],
-        [{"text": "🗑 Vider le panier", "callback_data": "clear"}],
-        [{"text": "🛍 Continuer mes achats", "callback_data": "menu"}],
     ]
+    balance = get_balance(chat_id)
+    if balance > 0 and balance >= round(total, 2):
+        rows.append([{"text": f"💰 Payer avec mon solde ({fmt(balance)})", "callback_data": "paybal"}])
+    rows.append([{"text": "🗑 Vider", "callback_data": "clear"},
+                 {"text": "🛍 Boutique", "callback_data": "menu"}])
     return "\n".join(lines), rows
+
+
+def support_view():
+    text = (
+        "💬 *Support*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "Une question, un souci avec une commande ou un paiement ?\n"
+        "Écris-nous en indiquant ton *numéro de commande*."
+    )
+    rows = []
+    if SUPPORT_LINK.startswith("https://"):
+        rows.append([{"text": "💬 Contacter le support", "url": SUPPORT_LINK}])
+    else:
+        text += "\n\n_Contact support bientôt disponible._"
+    rows.append([{"text": "🏠 Accueil", "callback_data": "menu"}])
+    return text, rows
+
+
+def channels_view():
+    text = (
+        "📢 *Nos canaux*\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "Retrouve tous nos canaux officiels ci-dessous."
+    )
+    rows = [
+        [{"text": label, "url": url}]
+        for label, url in CHANNELS if url.startswith("https://")
+    ]
+    if not rows:
+        text += "\n\n_Les liens arrivent bientôt._"
+    rows.append([{"text": "🏠 Accueil", "callback_data": "menu"}])
+    return text, rows
+
+
+def handle_checkout(cq, chat_id, message_id, use_balance=False):
+    cart = get_cart(chat_id)
+    if not cart:
+        answer_callback(cq["id"], "Panier vide.", alert=True)
+        return
+    for pid, qty in cart.items():
+        if not in_stock(pid, qty):
+            answer_callback(cq["id"], f"Stock insuffisant : {PRODUCTS[pid]['name']}.", alert=True)
+            return
+
+    total = round(sum(PRODUCTS[pid]["price"] * qty for pid, qty in cart.items()), 2)
+    user = cq["from"]
+    username = f"@{user['username']}" if user.get("username") else user.get("first_name", "client")
+
+    if use_balance and not spend_balance(chat_id, total):
+        answer_callback(cq["id"], "Solde insuffisant.", alert=True)
+        return
+    answer_callback(cq["id"])
+
+    order_id = create_order(chat_id, username, cart, total, "paid" if use_balance else "pending_payment")
+
+    # Décrémente le stock des articles limités (comptes/clés).
+    for pid, qty in cart.items():
+        if pid in STOCK:
+            STOCK[pid] = max(0, STOCK[pid] - qty)
+
+    if use_balance:
+        confirm = TEXT_ORDER_PAID.format(
+            order_id=f"{order_id:05d}", total=fmt(total), balance=fmt(get_balance(chat_id))
+        )
+    else:
+        confirm = TEXT_ORDER_CONFIRM.format(
+            order_id=f"{order_id:05d}", total=fmt(total), payment_info=PAYMENT_INFO
+        )
+    edit_message(
+        chat_id, message_id, confirm,
+        [[{"text": "📦 Mes commandes", "callback_data": "orders"},
+          {"text": "🏠 Boutique", "callback_data": "menu"}]],
+        parse_mode="Markdown",
+    )
+
+    if ADMIN_CHAT_ID:
+        detail = "\n".join(
+            f"• {PRODUCTS[pid]['name']} x{qty} — {fmt(PRODUCTS[pid]['price'] * qty)}"
+            for pid, qty in cart.items()
+        )
+        etat = "payée avec le solde" if use_balance else "en attente du paiement"
+        send_message(
+            ADMIN_CHAT_ID,
+            f"🆕 *NOUVELLE COMMANDE #{order_id:05d}*\n"
+            f"👤 `{username}` · id `{chat_id}`\n\n"
+            f"{detail}\n\n*Total : {fmt(total)}*\n\n"
+            f"_Statut : {etat}._",
+            admin_order_keyboard(order_id),
+            parse_mode="Markdown",
+        )
+
+    CARTS[chat_id] = {}
 
 
 # --- Routes Flask ------------------------------------------------------------
@@ -571,7 +786,7 @@ def webhook():
         is_admin = ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID)
 
         if text.startswith("/start"):
-            send_home(chat_id)
+            send_home(chat_id, update["message"]["from"])
 
         elif text.startswith("/commandes"):
             text_orders, kb = orders_view(chat_id)
@@ -599,6 +814,29 @@ def webhook():
                 STOCK[pid] = max(0, STOCK[pid] + delta)
                 send_message(chat_id, f"✅ {PRODUCTS[pid]['name']} : stock mis à {STOCK[pid]}.")
 
+        elif is_admin and text.startswith("/credit"):
+            parts = text.split()
+            try:
+                target = int(parts[1])
+                amount = round(float(parts[2].replace(",", ".")), 2)
+            except (IndexError, ValueError):
+                send_message(
+                    chat_id,
+                    "Usage : `/credit <id client> <montant>`\n"
+                    "Ex. `/credit 123456789 10` ajoute 10€ au solde.\n"
+                    "Montant négatif pour retirer.",
+                    parse_mode="Markdown",
+                )
+            else:
+                new_balance = add_balance(target, amount)
+                send_message(chat_id, f"✅ Solde du client `{target}` : *{fmt(new_balance)}*", parse_mode="Markdown")
+                if amount > 0:
+                    send_message(
+                        target,
+                        f"💰 *Solde crédité : +{fmt(amount)}*\n\nNouveau solde : *{fmt(new_balance)}*",
+                        parse_mode="Markdown",
+                    )
+
     elif "callback_query" in update:
         cq = update["callback_query"]
         chat_id = cq["message"]["chat"]["id"]
@@ -609,7 +847,7 @@ def webhook():
             answer_callback(cq["id"])
             # On supprime l'ancien message puis on réaffiche l'accueil (avec l'image).
             tg_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
-            send_home(chat_id)
+            send_home(chat_id, cq["from"])
 
         elif data.startswith("cat:"):
             answer_callback(cq["id"])
@@ -623,7 +861,7 @@ def webhook():
         elif data.startswith("sub:"):
             answer_callback(cq["id"])
             _, cat, sub = data.split(":", 2)
-            edit_message(chat_id, message_id, f"📂 *{cat}* · {sub}", kb_products(cat, sub), parse_mode="Markdown")
+            edit_message(chat_id, message_id, products_text(cat, sub), kb_products(cat, sub), parse_mode="Markdown")
 
         elif data == "oos":
             answer_callback(cq["id"], "Ce produit est en rupture de stock.", alert=True)
@@ -641,10 +879,7 @@ def webhook():
                 # Mise à jour discrète du clavier pour afficher le nombre d'articles dans le panier.
                 cat = PRODUCTS[pid]["cat"]
                 sub = PRODUCTS[pid].get("sub")
-                if sub:
-                    title = f"📂 *{cat}* · {sub}"
-                else:
-                    title = CAT_TEXT.get(cat, f"📂 *{cat}*")
+                title = products_text(cat, sub)
                 edit_message(chat_id, message_id, title, kb_products(cat, sub), parse_mode="Markdown")
 
         elif data.startswith("adminstatus:"):
@@ -709,6 +944,16 @@ def webhook():
                 text, kb = order_detail_view(order_id, chat_id)
                 edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
 
+        elif data == "support":
+            answer_callback(cq["id"])
+            text, kb = support_view()
+            edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
+
+        elif data == "channels":
+            answer_callback(cq["id"])
+            text, kb = channels_view()
+            edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
+
         elif data == "cart":
             answer_callback(cq["id"])
             text, kb = cart_view(chat_id)
@@ -720,47 +965,8 @@ def webhook():
             text, kb = cart_view(chat_id)
             edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
 
-        elif data == "checkout":
-            cart = get_cart(chat_id)
-            if not cart:
-                answer_callback(cq["id"], "Panier vide.", alert=True)
-            else:
-                total = sum(PRODUCTS[pid]["price"] * qty for pid, qty in cart.items())
-                answer_callback(cq["id"])
-
-                user = cq["from"]
-                username = f"@{user['username']}" if user.get('username') else user.get('first_name', "client")
-                order_id = create_order(chat_id, username, cart, total)
-
-                # Décrémente le stock des articles limités (comptes/clés).
-                for pid, qty in cart.items():
-                    if pid in STOCK:
-                        STOCK[pid] = max(0, STOCK[pid] - qty)
-
-                edit_message(
-                    chat_id, message_id,
-                    TEXT_ORDER_CONFIRM.format(order_id=f"{order_id:05d}", total=fmt(total), payment_info=PAYMENT_INFO),
-                    [[{"text": "📦 Voir mes commandes", "callback_data": "orders"}],
-                     [{"text": "🏠 Boutique", "callback_data": "menu"}]],
-                    parse_mode="Markdown",
-                )
-
-                if ADMIN_CHAT_ID:
-                    detail = "\n".join(
-                        f"• {PRODUCTS[pid]['name']} x{qty} — {fmt(PRODUCTS[pid]['price'] * qty)}"
-                        for pid, qty in cart.items()
-                    )
-                    send_message(
-                        ADMIN_CHAT_ID,
-                        f"🆕 *NOUVELLE COMMANDE #{order_id:05d}*\n"
-                        f"👤 {username} · id `{chat_id}`\n\n"
-                        f"{detail}\n\n*Total : {fmt(total)}*\n\n"
-                        "_Statut : en attente du paiement._",
-                        admin_order_keyboard(order_id),
-                        parse_mode="Markdown",
-                    )
-
-                CARTS[chat_id] = {}
+        elif data in ("checkout", "paybal"):
+            handle_checkout(cq, chat_id, message_id, use_balance=(data == "paybal"))
 
     return "ok"
 
