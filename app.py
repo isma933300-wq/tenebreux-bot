@@ -12,7 +12,8 @@ import os
 import re
 import json
 import html
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import requests
 from datetime import datetime, timezone
 from flask import Flask, request
@@ -206,6 +207,314 @@ PRODUCTS = {
     "a35": {"name": "Fox One", "cat": "Comptes & Abonnements", "sub": "Streaming", "price": 2.90},
     "a36": {"name": "MLB", "cat": "Comptes & Abonnements", "sub": "Streaming", "price": 4.90},
     "a37": {"name": "Curiosity Stream", "cat": "Comptes & Abonnements", "sub": "Streaming", "price": 6.30},
+}
+
+# Catégories qui ont un second niveau de menu (sous-catégories).
+SUBCATEGORIES = {
+    "SMM": ["Telegram", "TikTok"],
+    "Comptes & Abonnements": ["Streaming", "Musique & Audio", "IA", "VPN", "Mail", "Outils"],
+}
+
+# --- Stock -------------------------------------------------------------
+# Les services Telegram/TikTok (tg*/tt*) sont générés à la demande : stock illimité,
+# pas d'entrée ici. Les comptes/clés (a*) ont un stock limité — 5 par défaut au
+# départ, à ajuster avec /stock (voir la liste) et /restock <id> <quantité>.
+STOCK: dict[str, int] = {pid: 5 for pid in PRODUCTS if pid.startswith("a")}
+
+SEUIL_STOCK_BAS = 3  # en dessous de ce nombre, affiche "plus que X en stock"
+
+
+def stock_of(pid: str):
+    """None = illimité (service SMM). Un entier = nombre de comptes restants."""
+    return STOCK.get(pid)
+
+
+def in_stock(pid: str, qty: int = 1) -> bool:
+    s = stock_of(pid)
+    return s is None or s >= qty
+
+
+CARTS: dict[int, dict[str, int]] = {}
+
+# --- Base de données (PostgreSQL / Neon) -----------------------------------
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL:
+    raise RuntimeError("Variable DATABASE_URL manquante (lien de connexion Neon).")
+
+
+class _Conn:
+    """Petit adaptateur : garde la même écriture que SQLite (? et row["colonne"])."""
+
+    def __init__(self):
+        self._c = psycopg2.connect(DATABASE_URL)
+
+    def execute(self, sql, params=()):
+        cur = self._c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql.replace("?", "%s"), params)
+        return cur
+
+    def commit(self):
+        self._c.commit()
+
+    def close(self):
+        self._c.close()
+
+
+def db_connect():
+    return _Conn()
+
+
+def init_db():
+    conn = db_connect()
+    conn.execute("""CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        telegram_id BIGINT NOT NULL,
+        username TEXT,
+        total DOUBLE PRECISION NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending_payment',
+        created_at TEXT NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS order_items (
+        id SERIAL PRIMARY KEY,
+        order_id INTEGER NOT NULL REFERENCES orders(id),
+        product_id TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price DOUBLE PRECISION NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        telegram_id BIGINT PRIMARY KEY,
+        username TEXT,
+        balance DOUBLE PRECISION NOT NULL DEFAULT 0
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+# --- Réglages modifiables depuis le panneau admin ---------------------------
+
+ADMIN_STATE: dict = {}   # saisie en cours de l'admin (banner, welcome, emoji, credit, restock, price)
+EMOJI_MAP: dict = {}     # emoji normal -> id de l'emoji premium
+EMOJI_RE = None          # repère un emoji du dictionnaire dans un texte
+EMOJI_BTN_RE = None      # repère un emoji du dictionnaire en début de bouton
+PREMIUM_UI = True        # interrupteur emojis premium + couleurs de boutons
+
+
+def is_admin_chat(chat_id):
+    return bool(ADMIN_CHAT_ID) and str(chat_id) == str(ADMIN_CHAT_ID)
+
+
+def get_setting(key, default=None):
+    conn = db_connect()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    conn = db_connect()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+
+
+def del_setting(key):
+    conn = db_connect()
+    conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+
+
+def refresh_settings():
+    global EMOJI_MAP, EMOJI_RE, EMOJI_BTN_RE, PREMIUM_UI
+    try:
+        EMOJI_MAP = json.loads(get_setting("emoji_map", "{}"))
+    except ValueError:
+        EMOJI_MAP = {}
+    keys = sorted(EMOJI_MAP, key=len, reverse=True)
+    if keys:
+        alt = "|".join(re.escape(k) for k in keys)
+        EMOJI_RE = re.compile("(" + alt + ")\ufe0f?")
+        EMOJI_BTN_RE = re.compile("^(" + alt + ")\ufe0f?\\s*")
+    else:
+        EMOJI_RE = EMOJI_BTN_RE = None
+    PREMIUM_UI = get_setting("premium_ui", "1") == "1"
+
+
+def load_price_overrides():
+    for pid in PRODUCTS:
+        v = get_setting(f"price:{pid}")
+        if v is not None:
+            try:
+                PRODUCTS[pid]["price"] = float(v)
+            except ValueError:
+                pass
+
+
+refresh_settings()
+load_price_overrides()
+
+
+def load_stock():
+    """Recharge le stock enregistré dans la base (sinon valeur par défaut = 5)."""
+    for pid in STOCK:
+        v = get_setting(f"stock:{pid}")
+        if v is not None:
+            try:
+                STOCK[pid] = int(v)
+            except ValueError:
+                pass
+
+
+def save_stock(pid):
+    set_setting(f"stock:{pid}", str(STOCK[pid]))
+
+
+load_stock()
+
+
+def current_banner():
+    """Bannière d'accueil : réglage admin, sinon variable WELCOME_IMAGE. '' = aucune."""
+    v = get_setting("welcome_image")
+    return WELCOME_IMAGE if v is None else v
+
+
+# --- Emojis premium : conversion Markdown -> HTML + boutons ------------------
+
+def md_to_html(text):
+    """Convertit notre Markdown (*gras* _italique_ `code`) en HTML Telegram."""
+    codes = []
+
+    def keep(m):
+        codes.append(m.group(1))
+        return f"\x00{len(codes) - 1}\x00"
+
+    text = re.sub(r"`([^`]*)`", keep, text)
+    text = html.escape(text, quote=False)
+    text = re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<i>\1</i>", text)
+    return re.sub(
+        r"\x00(\d+)\x00",
+        lambda m: "<code>" + html.escape(codes[int(m.group(1))], quote=False) + "</code>",
+        text,
+    )
+
+
+def apply_custom_emoji(text):
+    if not EMOJI_RE:
+        return text
+    return EMOJI_RE.sub(
+        lambda m: f'<tg-emoji emoji-id="{EMOJI_MAP[m.group(1)]}">{m.group(1)}</tg-emoji>', text
+    )
+
+
+def decorate_keyboard(kb):
+    """Emojis premium en début de bouton + couleurs (vert = valider, rouge = annuler/vider)."""
+    out = []
+    for row in kb:
+        new_row = []
+        for b in row:
+            b = dict(b)
+            cb = b.get("callback_data", "")
+            if EMOJI_BTN_RE:
+                m = EMOJI_BTN_RE.match(b["text"])
+                if m and b["text"][m.end():]:
+                    b["icon_custom_emoji_id"] = EMOJI_MAP[m.group(1)]
+                    b["text"] = b["text"][m.end():]
+            if cb in ("checkout", "paybal") or cb.endswith(":completed"):
+                b["style"] = "success"
+            elif cb == "clear" or cb.endswith(":cancelled"):
+                b["style"] = "danger"
+            new_row.append(b)
+        out.append(new_row)
+    return out
+
+
+ENHANCED_METHODS = {"sendMessage", "editMessageText", "sendPhoto"}
+
+
+def enhance_payload(method, payload):
+    p = dict(payload)
+    markup = p.get("reply_markup")
+    if markup and markup.get("inline_keyboard"):
+        p["reply_markup"] = {"inline_keyboard": decorate_keyboard(markup["inline_keyboard"])}
+    if EMOJI_MAP and p.get("parse_mode") == "Markdown":
+        field = "caption" if method == "sendPhoto" else "text"
+        if field in p:
+            p[field] = apply_custom_emoji(md_to_html(p[field]))
+            p["parse_mode"] = "HTML"
+    return p
+
+
+def upsert_user(user):
+    """Enregistre / met à jour le client et renvoie son @ (ou son prénom)."""
+    username = f"@{user['username']}" if user.get("username") else (user.get("first_name") or "client")
+    conn = db_connect()
+    conn.execute(
+        "INSERT INTO users (telegram_id, username, balance) VALUES (?, ?, 0) "
+        "ON CONFLICT(telegram_id) DO UPDATE SET username = excluded.username",
+        (user["id"], username),
+    )
+    conn.commit()
+    conn.close()
+    return username
+
+
+def get_balance(telegram_id):
+    conn = db_connect()
+    row = conn.execute("SELECT balance FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    conn.close()
+    return round(row["balance"], 2) if row else 0.0
+
+
+def add_balance(telegram_id, delta):
+    """Ajoute (ou retire si négatif) du solde. Ne descend jamais sous 0. Renvoie le nouveau solde."""
+    conn = db_connect()
+    conn.execute("INSERT INTO users (telegram_id, username, balance) VALUES (?, NULL, 0) ON CONFLICT (telegram_id) DO NOTHING", (telegram_id,))
+    conn.execute("UPDATE users SET balance = GREATEST(0, ROUND((balance + ?)::numeric, 2)) WHERE telegram_id = ?", (delta, telegram_id))
+    conn.commit()
+    row = conn.execute("SELECT balance FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    conn.close()
+    return round(row["balance"], 2)
+
+
+def spend_balance(telegram_id, amount):
+    """Débite le solde seulement s'il est suffisant. Renvoie True si le paiement est passé."""
+    conn = db_connect()
+    cur = conn.execute(
+        "UPDATE users SET balance = ROUND((balance - ?)::numeric, 2) WHERE telegram_id = ? AND balance >= ?",
+        (amount, telegram_id, amount),
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def create_order(telegram_id, username, cart, total, status="pending_payment"):
+    conn = db_connect()
+    cur = conn.execute(
+        "INSERT INTO orders (telegram_id, username, total, status, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (telegram_id, username, total, status, datetime.now(timezone.utc).isoformat()),
+    )
+    order_id = cur.fetchone()["id"]
+    for pid, qty in cart.items():
+        product = PRODUCTS[pid]
+        conn.execute(
+            "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
+            (order_id, pid, product["name"], qty, product["price"]),
+        )
+   "cat": "Comptes & Abonnements", "sub": "Streaming", "price": 6.30},
 }
 
 # Catégories qui ont un second niveau de menu (sous-catégories).
