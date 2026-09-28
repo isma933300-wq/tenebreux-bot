@@ -9,6 +9,9 @@ Fichiers du projet :
 """
 
 import os
+import re
+import json
+import html
 import sqlite3
 import requests
 from datetime import datetime, timezone
@@ -266,11 +269,156 @@ def init_db():
         username TEXT,
         balance REAL NOT NULL DEFAULT 0
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
     conn.commit()
     conn.close()
 
 
 init_db()
+
+
+# --- Réglages modifiables depuis le panneau admin ---------------------------
+
+ADMIN_STATE: dict = {}   # saisie en cours de l'admin (banner, welcome, emoji, credit, restock, price)
+EMOJI_MAP: dict = {}     # emoji normal -> id de l'emoji premium
+EMOJI_RE = None          # repère un emoji du dictionnaire dans un texte
+EMOJI_BTN_RE = None      # repère un emoji du dictionnaire en début de bouton
+PREMIUM_UI = True        # interrupteur emojis premium + couleurs de boutons
+
+
+def is_admin_chat(chat_id):
+    return bool(ADMIN_CHAT_ID) and str(chat_id) == str(ADMIN_CHAT_ID)
+
+
+def get_setting(key, default=None):
+    conn = db_connect()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    conn = db_connect()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+
+
+def del_setting(key):
+    conn = db_connect()
+    conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+
+
+def refresh_settings():
+    global EMOJI_MAP, EMOJI_RE, EMOJI_BTN_RE, PREMIUM_UI
+    try:
+        EMOJI_MAP = json.loads(get_setting("emoji_map", "{}"))
+    except ValueError:
+        EMOJI_MAP = {}
+    keys = sorted(EMOJI_MAP, key=len, reverse=True)
+    if keys:
+        alt = "|".join(re.escape(k) for k in keys)
+        EMOJI_RE = re.compile("(" + alt + ")\ufe0f?")
+        EMOJI_BTN_RE = re.compile("^(" + alt + ")\ufe0f?\\s*")
+    else:
+        EMOJI_RE = EMOJI_BTN_RE = None
+    PREMIUM_UI = get_setting("premium_ui", "1") == "1"
+
+
+def load_price_overrides():
+    for pid in PRODUCTS:
+        v = get_setting(f"price:{pid}")
+        if v is not None:
+            try:
+                PRODUCTS[pid]["price"] = float(v)
+            except ValueError:
+                pass
+
+
+refresh_settings()
+load_price_overrides()
+
+
+def current_banner():
+    """Bannière d'accueil : réglage admin, sinon variable WELCOME_IMAGE. '' = aucune."""
+    v = get_setting("welcome_image")
+    return WELCOME_IMAGE if v is None else v
+
+
+# --- Emojis premium : conversion Markdown -> HTML + boutons ------------------
+
+def md_to_html(text):
+    """Convertit notre Markdown (*gras* _italique_ `code`) en HTML Telegram."""
+    codes = []
+
+    def keep(m):
+        codes.append(m.group(1))
+        return f"\x00{len(codes) - 1}\x00"
+
+    text = re.sub(r"`([^`]*)`", keep, text)
+    text = html.escape(text, quote=False)
+    text = re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\w)_([^_\n]+)_(?!\w)", r"<i>\1</i>", text)
+    return re.sub(
+        r"\x00(\d+)\x00",
+        lambda m: "<code>" + html.escape(codes[int(m.group(1))], quote=False) + "</code>",
+        text,
+    )
+
+
+def apply_custom_emoji(text):
+    if not EMOJI_RE:
+        return text
+    return EMOJI_RE.sub(
+        lambda m: f'<tg-emoji emoji-id="{EMOJI_MAP[m.group(1)]}">{m.group(1)}</tg-emoji>', text
+    )
+
+
+def decorate_keyboard(kb):
+    """Emojis premium en début de bouton + couleurs (vert = valider, rouge = annuler/vider)."""
+    out = []
+    for row in kb:
+        new_row = []
+        for b in row:
+            b = dict(b)
+            cb = b.get("callback_data", "")
+            if EMOJI_BTN_RE:
+                m = EMOJI_BTN_RE.match(b["text"])
+                if m and b["text"][m.end():]:
+                    b["icon_custom_emoji_id"] = EMOJI_MAP[m.group(1)]
+                    b["text"] = b["text"][m.end():]
+            if cb in ("checkout", "paybal") or cb.endswith(":completed"):
+                b["style"] = "success"
+            elif cb == "clear" or cb.endswith(":cancelled"):
+                b["style"] = "danger"
+            new_row.append(b)
+        out.append(new_row)
+    return out
+
+
+ENHANCED_METHODS = {"sendMessage", "editMessageText", "sendPhoto"}
+
+
+def enhance_payload(method, payload):
+    p = dict(payload)
+    markup = p.get("reply_markup")
+    if markup and markup.get("inline_keyboard"):
+        p["reply_markup"] = {"inline_keyboard": decorate_keyboard(markup["inline_keyboard"])}
+    if EMOJI_MAP and p.get("parse_mode") == "Markdown":
+        field = "caption" if method == "sendPhoto" else "text"
+        if field in p:
+            p[field] = apply_custom_emoji(md_to_html(p[field]))
+            p["parse_mode"] = "HTML"
+    return p
 
 
 def upsert_user(user):
@@ -494,13 +642,24 @@ def admin_order_text(order_id):
 
 # --- Appels bruts à l'API Telegram -----------------------------------------
 
-def tg_call(method: str, payload: dict):
-    """Appelle l'API Telegram et renvoie la réponse JSON ({} en cas d'erreur)."""
+def _post(method, payload):
     try:
-        r = requests.post(f"{API_URL}/{method}", json=payload, timeout=10)
-        return r.json()
+        return requests.post(f"{API_URL}/{method}", json=payload, timeout=10).json()
     except Exception:
         return {}
+
+
+def tg_call(method: str, payload: dict):
+    """Appelle l'API Telegram. Essaie d'abord avec emojis premium / couleurs ;
+    si Telegram refuse, renvoie la version classique : le bot ne casse jamais."""
+    if PREMIUM_UI and method in ENHANCED_METHODS:
+        r = _post(method, enhance_payload(method, payload))
+        if r.get("ok"):
+            return r
+        desc = str(r.get("description", "")).lower()
+        if "not modified" in desc or "no text" in desc:
+            return r
+    return _post(method, payload)
 
 
 def send_message(chat_id, text, keyboard=None, parse_mode=None):
@@ -514,26 +673,34 @@ def send_message(chat_id, text, keyboard=None, parse_mode=None):
 
 def welcome_text(user):
     username = upsert_user(user).replace("`", "")
-    return TEXT_WELCOME.format(
-        user_id=user["id"], username=username, balance=fmt(get_balance(user["id"]))
-    )
+    values = dict(user_id=user["id"], username=username, balance=fmt(get_balance(user["id"])))
+    custom = get_setting("welcome_text")
+    if custom:
+        try:
+            return custom.format(**values)
+        except (KeyError, IndexError, ValueError):
+            pass
+    return TEXT_WELCOME.format(**values)
 
 
 def send_home(chat_id, user):
-    """Écran d'accueil (ID, @, solde) : avec image si WELCOME_IMAGE est défini, sinon texte seul."""
+    """Écran d'accueil (ID, @, solde) avec bannière si définie."""
     kb = kb_categories(chat_id)
     text = welcome_text(user)
-    if WELCOME_IMAGE:
+    banner = current_banner()
+    if banner:
         r = tg_call("sendPhoto", {
             "chat_id": chat_id,
-            "photo": WELCOME_IMAGE,
+            "photo": banner,
             "caption": text,
             "parse_mode": "Markdown",
             "reply_markup": {"inline_keyboard": kb},
         })
         if r.get("ok"):
             return
-    send_message(chat_id, text, kb, parse_mode="Markdown")
+    r = send_message(chat_id, text, kb, parse_mode="Markdown")
+    if not r.get("ok"):
+        send_message(chat_id, text, kb)  # texte perso mal formaté : on envoie sans mise en forme
 
 
 def edit_message(chat_id, message_id, text, keyboard=None, parse_mode=None):
@@ -573,7 +740,7 @@ def cart_count(chat_id):
 def kb_categories(chat_id=None):
     count = cart_count(chat_id) if chat_id is not None else 0
     cart_label = f"🛒 Panier · {count}" if count else "🛒 Panier"
-    return [
+    rows = [
         [{"text": CATEGORY_LABELS.get(c, c), "callback_data": f"cat:{c}"} for c in CATEGORIES],
         [{"text": cart_label, "callback_data": "cart"},
          {"text": "📦 Commandes", "callback_data": "orders"}],
@@ -581,6 +748,9 @@ def kb_categories(chat_id=None):
          {"text": "💬 Support", "callback_data": "support"}],
         [{"text": "📢 Canaux", "callback_data": "channels"}],
     ]
+    if chat_id is not None and is_admin_chat(chat_id):
+        rows.append([{"text": "🛠 Admin", "callback_data": "adm:home"}])
+    return rows
 
 
 SUBCAT_LABELS = {
@@ -674,6 +844,241 @@ def cart_view(chat_id):
     rows.append([{"text": "🗑 Vider", "callback_data": "clear"},
                  {"text": "🛍 Boutique", "callback_data": "menu"}])
     return "\n".join(lines), rows
+
+
+ADMIN_HOME_TEXT = "🛠 *Panneau admin*\n━━━━━━━━━━━━━━━\n\nChoisis ce que tu veux modifier 👇"
+
+ADMIN_BACK = [{"text": "⬅️ Panneau admin", "callback_data": "adm:home"}]
+
+
+def admin_home_kb():
+    return [
+        [{"text": "🖼 Bannière", "callback_data": "adm:banner"},
+         {"text": "✏️ Accueil", "callback_data": "adm:welcome"}],
+        [{"text": "🎨 Emojis premium", "callback_data": "adm:emoji"},
+         {"text": "💰 Solde client", "callback_data": "adm:credit"}],
+        [{"text": "📦 Stock", "callback_data": "adm:stock"},
+         {"text": "🏷 Prix", "callback_data": "adm:price"}],
+        [{"text": "📊 Stats", "callback_data": "adm:stats"},
+         {"text": "🏠 Boutique", "callback_data": "menu"}],
+    ]
+
+
+def admin_stats_text():
+    conn = db_connect()
+    clients = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+    row = conn.execute(
+        """SELECT COUNT(*) AS n,
+            SUM(CASE WHEN status = 'pending_payment' THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN status IN ('paid', 'processing') THEN 1 ELSE 0 END) AS running,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS done,
+            COALESCE(SUM(CASE WHEN status IN ('paid', 'processing', 'completed') THEN total END), 0) AS revenue
+           FROM orders"""
+    ).fetchone()
+    conn.close()
+    return (
+        "📊 *Stats*\n━━━━━━━━━━━━━━━\n\n"
+        f"👥 Clients : *{clients}*\n"
+        f"📦 Commandes : *{row['n']}*\n"
+        f"🟡 En attente de paiement : *{row['pending'] or 0}*\n"
+        f"⚙️ Payées / en cours : *{row['running'] or 0}*\n"
+        f"✅ Terminées : *{row['done'] or 0}*\n"
+        f"💰 Total encaissé : *{fmt(row['revenue'])}*"
+    )
+
+
+def admin_screen(chat_id, action):
+    """Renvoie (texte, clavier) d'un écran du panneau admin et règle la saisie attendue."""
+    ADMIN_STATE.pop(chat_id, None)
+
+    if action == "banner":
+        ADMIN_STATE[chat_id] = "banner"
+        etat = "✅ active" if current_banner() else "aucune"
+        return (
+            "🖼 *Bannière d'accueil*\n━━━━━━━━━━━━━━━\n\n"
+            f"Statut : {etat}\n\n"
+            "Envoie-moi *une photo* : elle deviendra la bannière du message d'accueil.",
+            [[{"text": "🗑 Retirer la bannière", "callback_data": "adm:banner_del"}], ADMIN_BACK],
+        )
+
+    if action == "welcome":
+        ADMIN_STATE[chat_id] = "welcome"
+        return (
+            "✏️ *Message d'accueil*\n━━━━━━━━━━━━━━━\n\n"
+            "Envoie-moi le nouveau texte.\n\n"
+            "Variables : `{user_id}` `{username}` `{balance}`\n"
+            "Mise en forme : `*gras*` `_italique_`",
+            [[{"text": "↩️ Remettre le texte d'origine", "callback_data": "adm:welcome_reset"}], ADMIN_BACK],
+        )
+
+    if action == "emoji":
+        ADMIN_STATE[chat_id] = "emoji"
+        actifs = "✅ activés" if PREMIUM_UI else "⏸ désactivés"
+        liste = " ".join(EMOJI_MAP) if EMOJI_MAP else "aucun"
+        return (
+            "🎨 *Emojis premium*\n━━━━━━━━━━━━━━━\n\n"
+            f"Statut : {actifs}\n"
+            f"Enregistrés : {liste}\n\n"
+            "Pour en ajouter : envoie-moi un message contenant les emojis premium voulus. "
+            "Chacun remplace l'emoji normal identique, partout dans le bot (messages et boutons).\n\n"
+            "Emojis utilisés par le bot : 🖤 🚀 💎 ⚡ 🔥 🛒 📦 👤 💬 📢 ✅ 🎉 💰 🔎 📈 🔐\n\n"
+            "⚠️ Il faut que le propriétaire du bot ait Telegram Premium. Sinon Telegram refuse "
+            "et le bot affiche les emojis normaux.",
+            [[{"text": "⏸ Désactiver" if PREMIUM_UI else "▶️ Activer", "callback_data": "adm:emoji_toggle"},
+              {"text": "🗑 Tout effacer", "callback_data": "adm:emoji_clear"}],
+             ADMIN_BACK],
+        )
+
+    if action == "credit":
+        ADMIN_STATE[chat_id] = "credit"
+        return (
+            "💰 *Solde client*\n━━━━━━━━━━━━━━━\n\n"
+            "Envoie : `id montant`\n"
+            "Ex. `123456789 10` ajoute 10€.\n"
+            "Montant négatif pour retirer.\n\n"
+            "_L'ID du client est affiché sur son message d'accueil. Tu peux enchaîner plusieurs clients._",
+            [ADMIN_BACK],
+        )
+
+    if action == "stock":
+        ADMIN_STATE[chat_id] = "restock"
+        lines = [f"`{pid}` {PRODUCTS[pid]['name']} : {qty}" for pid, qty in sorted(STOCK.items())]
+        return (
+            "📦 *Stock*\n━━━━━━━━━━━━━━━\n\n" + "\n".join(lines) +
+            "\n\nEnvoie : `id quantité` pour ajouter (ex. `a04 10`, négatif pour retirer).",
+            [ADMIN_BACK],
+        )
+
+    if action == "price":
+        ADMIN_STATE[chat_id] = "price"
+        lines = [f"`{pid}` {p['name']} : {fmt(p['price'])}" for pid, p in PRODUCTS.items()]
+        return (
+            "🏷 *Prix*\n━━━━━━━━━━━━━━━\n\n" + "\n".join(lines) +
+            "\n\nEnvoie : `id prix` (ex. `tt1 4.5`).",
+            [ADMIN_BACK],
+        )
+
+    if action == "stats":
+        return admin_stats_text(), [ADMIN_BACK]
+
+    return ADMIN_HOME_TEXT, admin_home_kb()
+
+
+def handle_admin_callback(cq, chat_id, message_id, data):
+    if not is_admin_chat(chat_id):
+        answer_callback(cq["id"], "Accès refusé.", alert=True)
+        return
+    answer_callback(cq["id"])
+    action = data.split(":", 1)[1]
+
+    if action == "banner_del":
+        set_setting("welcome_image", "")
+        action = "banner"
+    elif action == "welcome_reset":
+        del_setting("welcome_text")
+        action = "welcome"
+    elif action == "emoji_toggle":
+        set_setting("premium_ui", "0" if PREMIUM_UI else "1")
+        refresh_settings()
+        action = "emoji"
+    elif action == "emoji_clear":
+        del_setting("emoji_map")
+        refresh_settings()
+        action = "emoji"
+
+    text, kb = admin_screen(chat_id, action)
+    edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
+
+
+def handle_admin_input(chat_id, msg):
+    """Traite le message envoyé par l'admin pendant une saisie (bannière, texte, emojis...)."""
+    mode = ADMIN_STATE.get(chat_id)
+    text = (msg.get("text") or "").strip()
+    back_kb = [ADMIN_BACK]
+
+    if mode == "banner":
+        photos = msg.get("photo")
+        if not photos:
+            send_message(chat_id, "Envoie une *photo* (pas un fichier), ou /annuler.", parse_mode="Markdown")
+            return
+        set_setting("welcome_image", photos[-1]["file_id"])
+        ADMIN_STATE.pop(chat_id, None)
+        send_message(chat_id, "✅ Bannière mise à jour. Tape /start pour la voir.", back_kb)
+
+    elif mode == "welcome":
+        try:
+            text.format(user_id=1, username="@test", balance="0€")
+        except (KeyError, IndexError, ValueError):
+            send_message(
+                chat_id,
+                "❌ Texte invalide : seules les variables `{user_id}` `{username}` `{balance}` "
+                "sont permises entre accolades. Réessaie ou /annuler.",
+                parse_mode="Markdown",
+            )
+            return
+        if not text:
+            send_message(chat_id, "Envoie le texte du message d'accueil, ou /annuler.")
+            return
+        set_setting("welcome_text", text)
+        ADMIN_STATE.pop(chat_id, None)
+        send_message(chat_id, "✅ Message d'accueil mis à jour. Tape /start pour le voir.", back_kb)
+
+    elif mode == "emoji":
+        raw = (msg.get("text") or "").encode("utf-16-le")  # Telegram compte les positions en UTF-16
+        found = {}
+        for e in msg.get("entities", []):
+            if e.get("type") == "custom_emoji":
+                ch = raw[e["offset"] * 2:(e["offset"] + e["length"]) * 2].decode("utf-16-le")
+                found[ch.replace("\ufe0f", "")] = e["custom_emoji_id"]
+        if not found:
+            send_message(
+                chat_id,
+                "Je n'ai trouvé aucun emoji premium dans ton message. "
+                "Envoie-moi des emojis premium (ou /annuler).",
+            )
+            return
+        EMOJI_MAP.update(found)
+        set_setting("emoji_map", json.dumps(EMOJI_MAP, ensure_ascii=False))
+        refresh_settings()
+        ADMIN_STATE.pop(chat_id, None)
+        send_message(chat_id, f"✅ {len(found)} emoji premium enregistré(s) : {' '.join(found)}\nTape /start pour voir le résultat.", back_kb)
+
+    elif mode == "credit":
+        parts = text.split()
+        try:
+            target, amount = int(parts[0]), round(float(parts[1].replace(",", ".")), 2)
+        except (IndexError, ValueError):
+            send_message(chat_id, "Format : `id montant` (ex. `123456789 10`), ou /annuler.", parse_mode="Markdown")
+            return
+        new_balance = add_balance(target, amount)
+        send_message(chat_id, f"✅ Solde du client `{target}` : *{fmt(new_balance)}*", back_kb, parse_mode="Markdown")
+        if amount > 0:
+            send_message(
+                target,
+                f"💰 *Solde crédité : +{fmt(amount)}*\n\nNouveau solde : *{fmt(new_balance)}*",
+                parse_mode="Markdown",
+            )
+
+    elif mode == "restock":
+        parts = text.split()
+        if len(parts) != 2 or parts[0] not in STOCK or not parts[1].lstrip("-").isdigit():
+            send_message(chat_id, "Format : `id quantité` (ex. `a04 10`), ou /annuler.", parse_mode="Markdown")
+            return
+        pid = parts[0]
+        STOCK[pid] = max(0, STOCK[pid] + int(parts[1]))
+        send_message(chat_id, f"✅ {PRODUCTS[pid]['name']} : stock à {STOCK[pid]}.", back_kb)
+
+    elif mode == "price":
+        parts = text.split()
+        try:
+            pid, price = parts[0], round(float(parts[1].replace(",", ".")), 2)
+            assert pid in PRODUCTS and price > 0
+        except (IndexError, ValueError, AssertionError):
+            send_message(chat_id, "Format : `id prix` (ex. `tt1 4.5`), ou /annuler.", parse_mode="Markdown")
+            return
+        PRODUCTS[pid]["price"] = price
+        set_setting(f"price:{pid}", str(price))
+        send_message(chat_id, f"✅ {PRODUCTS[pid]['name']} : {fmt(price)}", back_kb)
 
 
 def support_view():
@@ -783,10 +1188,24 @@ def webhook():
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "")
 
-        is_admin = ADMIN_CHAT_ID and str(chat_id) == str(ADMIN_CHAT_ID)
+        is_admin = is_admin_chat(chat_id)
+
+        # Saisie en cours dans le panneau admin (bannière, texte, emojis, solde...)
+        if is_admin and ADMIN_STATE.get(chat_id) and not text.startswith("/"):
+            handle_admin_input(chat_id, update["message"])
+            return "ok"
 
         if text.startswith("/start"):
+            ADMIN_STATE.pop(chat_id, None)
             send_home(chat_id, update["message"]["from"])
+
+        elif is_admin and text.startswith("/admin"):
+            ADMIN_STATE.pop(chat_id, None)
+            send_message(chat_id, ADMIN_HOME_TEXT, admin_home_kb(), parse_mode="Markdown")
+
+        elif is_admin and text.startswith("/annuler"):
+            ADMIN_STATE.pop(chat_id, None)
+            send_message(chat_id, "✅ Annulé.", admin_home_kb())
 
         elif text.startswith("/commandes"):
             text_orders, kb = orders_view(chat_id)
@@ -943,6 +1362,9 @@ def webhook():
             else:
                 text, kb = order_detail_view(order_id, chat_id)
                 edit_message(chat_id, message_id, text, kb, parse_mode="Markdown")
+
+        elif data.startswith("adm:"):
+            handle_admin_callback(cq, chat_id, message_id, data)
 
         elif data == "support":
             answer_callback(cq["id"])
